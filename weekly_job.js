@@ -12,6 +12,8 @@ const parser = new Parser({
   },
 });
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function takeLatest(items, n) {
   const withDate = items
     .map((it) => ({ ...it, _d: new Date(it.date || 0) }))
@@ -63,8 +65,30 @@ ARTIKLAR:
 ${lines}
 `;
 
-  const result = await ai.models.generateContent({ model: modelName, contents: prompt });
-  return result.text;
+  let lastErr = null;
+
+  // Retry vid 503/overloaded
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await ai.models.generateContent({ model: modelName, contents: prompt });
+      return result.text;
+    } catch (e) {
+      lastErr = e;
+      const msg = e?.message ? e.message : String(e);
+      const overloaded =
+        msg.includes('503') ||
+        msg.toLowerCase().includes('overloaded') ||
+        msg.toLowerCase().includes('unavailable');
+
+      if (!overloaded) throw e;
+
+      const waitMs = attempt === 1 ? 1500 : attempt === 2 ? 3000 : 5000;
+      console.log(`⚠️ Gemini överbelastad (503). Försök ${attempt}/3. Väntar ${waitMs}ms...`);
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastErr;
 }
 
 async function postToDiscordChannel(content) {
@@ -127,7 +151,25 @@ main()
     console.log('✅ Klart. Postat i Discord.');
     process.exit(0);
   })
-  .catch((e) => {
+  .catch(async (e) => {
+    const msg = e?.message ? e.message : String(e);
     console.error('❌ Fel:', e);
+
+    // Om Gemini är överbelastad: posta info och avsluta som "success"
+    if (
+      msg.includes('503') ||
+      msg.toLowerCase().includes('overloaded') ||
+      msg.toLowerCase().includes('unavailable')
+    ) {
+      try {
+        await postToDiscordChannel(
+          '⚠️ Veckosummering kunde inte genereras just nu (Gemini överbelastad). Jag försöker igen nästa schemalagda körning.'
+        );
+      } catch (postErr) {
+        console.error('Kunde inte posta fallback-meddelande:', postErr?.message || postErr);
+      }
+      process.exit(0);
+    }
+
     process.exit(1);
   });
