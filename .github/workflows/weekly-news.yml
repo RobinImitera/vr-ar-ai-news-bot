@@ -1,0 +1,31 @@
+name: Weekly VR/AR/AI News
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Måndag 08:00 UTC (~09:00 Sverige)
+  workflow_dispatch: # gör att du kan köra manuellt
+
+jobs:
+  run-weekly-news:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run weekly job
+        run: node weekly_job.js
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NEWS_CHANNEL_ID: ${{ secrets.NEWS_CHANNEL_ID }}
+          RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
