@@ -2,8 +2,15 @@ require('dotenv').config();
 const Parser = require('rss-parser');
 const { GoogleGenAI } = require('@google/genai');
 
-const parser = new Parser();
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// Viktigt: sätt User-Agent så fler feeds beter sig “snällt”
+const parser = new Parser({
+  headers: {
+    'User-Agent': 'vr-ar-ai-news-bot/1.0 (GitHub Actions)',
+    'Accept': 'application/rss+xml, application/xml;q=0.9, */*;q=0.8',
+  },
+});
 
 function takeLatest(items, n) {
   const withDate = items
@@ -15,15 +22,21 @@ function takeLatest(items, n) {
   return withDate.slice(0, n).map(({ _d, _valid, ...rest }) => rest);
 }
 
-async function fetchFeedItems(feedUrl) {
-  const feed = await parser.parseURL(feedUrl);
-  const items = feed.items || [];
-  return items.map((it) => ({
-    source: feed.title || feedUrl,
-    title: it.title || '(utan titel)',
-    link: it.link || '',
-    date: it.isoDate || it.pubDate || it.published || it.updated || '',
-  }));
+async function fetchFeedItemsSafe(feedUrl) {
+  try {
+    const feed = await parser.parseURL(feedUrl);
+    const items = feed.items || [];
+    return items.map((it) => ({
+      source: feed.title || feedUrl,
+      title: it.title || '(utan titel)',
+      link: it.link || '',
+      date: it.isoDate || it.pubDate || it.published || it.updated || '',
+    }));
+  } catch (e) {
+    console.error(`⚠️ Skippade trasig/otillgänglig feed: ${feedUrl}`);
+    console.error(e?.message || e);
+    return []; // <-- viktig: krascha inte hela jobbet
+  }
 }
 
 async function summarize(items) {
@@ -58,11 +71,9 @@ async function postToDiscordChannel(content) {
   const channelId = process.env.NEWS_CHANNEL_ID;
   const token = process.env.DISCORD_TOKEN;
 
-  if (!channelId) throw new Error('NEWS_CHANNEL_ID saknas i .env');
-  if (!token) throw new Error('DISCORD_TOKEN saknas i .env');
+  if (!channelId) throw new Error('NEWS_CHANNEL_ID saknas (GitHub Secret).');
+  if (!token) throw new Error('DISCORD_TOKEN saknas (GitHub Secret).');
 
-  // Discord Create Message: POST /channels/{channel.id}/messages (Bot token auth)
-  // (Discord docs beskriver bot-token auth i API Reference.) 
   const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
 
   const res = await fetch(url, {
@@ -86,14 +97,20 @@ async function main() {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (feedList.length === 0) throw new Error('RSS_FEEDS saknas i .env');
+  if (feedList.length === 0) throw new Error('RSS_FEEDS saknas (GitHub Secret).');
 
   const PER_FEED = 10;
   const all = [];
 
   for (const url of feedList) {
-    const items = await fetchFeedItems(url);
-    all.push(...takeLatest(items, PER_FEED));
+    const items = await fetchFeedItemsSafe(url);
+    const latest = takeLatest(items, PER_FEED);
+    all.push(...latest);
+  }
+
+  if (all.length === 0) {
+    await postToDiscordChannel('⚠️ Kunde inte läsa någon RSS-feed just nu (alla misslyckades).');
+    return;
   }
 
   const totalLatest = takeLatest(all, 30);
